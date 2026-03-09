@@ -1,0 +1,386 @@
+<!-- 1. วาดโครงสร้าง html -->
+
+<!DOCTYPE html>
+<html lang="th">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web GIS Training</title>
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.css" />
+    <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.min.js"></script>
+
+
+    <style>
+        /* ส่วนการจัดหน้าจอ (Layout Styling) */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            display: flex;
+        }
+
+        /* พื้นที่แสดงผลแผนที่หลัก */
+        #map {
+            flex-grow: 1;
+            height: 100vh;
+        }
+        * Sidebar สำหรับเก็บเครื่องมือควบคุมชั้นข้อมูล */
+        #sidebar {
+            width: 320px;
+            height: 100vh;
+            background: #fff;
+            border-right: 1px solid #ddd;
+            z-index: 2000;
+            overflow-y: auto;
+            transition: 0.3s;
+            flex-shrink: 0;
+        }
+
+        #sidebar.collapsed {
+            margin-left: -320px;
+        }
+
+        .panel-content {
+            padding: 20px;
+        }
+
+        .layer-group {
+            margin-bottom: 25px;
+            clear: both;
+        }
+
+        /* หัวข้อกลุ่ม Layer ใน Sidebar */
+        .section-title {
+            font-weight: bold;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 5px;
+            margin-bottom: 10px;
+            display: block;
+            color: #2c3e50;
+        }
+/* ขยับปุ่ม Geoman (เครื่องมือวาด) ลงมาเล็กน้อยเพื่อไม่ให้ซ้อนทับกับปุ่มเมนูของเรา */
+        .leaflet-top.leaflet-left {
+            margin-top: 60px !important;
+        }
+
+        /* ปรับสไตล์ Layer Control ของ Leaflet ให้มาแสดงเป็นรายการใน Sidebar */
+        .leaflet-control-layers {
+            position: relative !important;
+            float: none !important;
+            box-shadow: none !important;
+            border: none !important;
+            margin: 0 !important;
+            display: block !important;
+        }
+/* ปุ่ม Hamburger สำหรับเปิด-ปิดแถบเมนูด้านซ้าย */
+        #toggle-btn {
+            position: absolute;
+            top: 10px;
+            left: 330px;
+            z-index: 2001;
+            padding: 10px 15px;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        /* ปุ่มสีเขียวสำหรับส่งออกไฟล์ข้อมูล */
+        .export-btn {
+            width: 100%;
+            padding: 12px;
+            background: #27ae60;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            border-radius: 4px;
+        }
+
+    </style>
+    
+
+</head>
+
+<body>
+    <div id="sidebar">
+        <div class="panel-content">
+            <h2 style="margin-top: 0;">GIS Tools</h2>
+
+            <div class="layer-group">
+                <div class="section-title">1. Basemap Layers</div>
+                <div id="basemap-ctrl"></div>
+            </div>
+
+            <div class="layer-group">
+                <div class="section-title">2. WMS Layers</div>
+                <div id="wms-ctrl"></div>
+            </div>
+
+            <div class="layer-group">
+                <div class="section-title">3. GeoJSON Data</div>
+                <input type="file" id="fileInput" accept=".geojson">
+                <div id="geojson-ctrl"></div>
+            </div>
+
+            <div class="layer-group">
+                <div class="section-title">Drawing Tools</div>
+                <button class="export-btn" onclick="exportGeoJSON()">📥 Export GeoJSON</button>
+            </div>
+        </div>
+    </div>
+
+    <button id="toggle-btn" onclick="toggleSidebar()">☰ Layers</button>
+
+    <div id="map"></div>
+
+    <script>
+        // [ขั้นตอนที่ 2] การสร้างแผนที่และการจัดการลำดับชั้น (Map & Z-Index)
+        // 2.1 กำหนดค่าเริ่มต้นแผนที่ (พิกัดกรุงเทพฯ, ซูมระดับ 6)
+        const map = L.map('map').setView([13.75, 100.5], 6);
+
+        // 2.2 สร้าง 'Pane' พิเศษสำหรับข้อมูล Vector เพื่อบังคับให้ข้อมูลจุด/เส้น/พื้นที่ อยู่ทับข้อมูลภาพ (WMS) เสมอ
+        map.createPane('vectorPane');
+        map.getPane('vectorPane').style.zIndex = 650; // ค่ามาตรฐานของภาพคือ 200-400, เราจึงตั้ง 650
+        map.getPane('vectorPane').style.pointerEvents = 'none'; // ป้องกันการบังการคลิกของ Layer อื่น
+
+        // [ขั้นตอนที่ 3] การจัดการแผนที่ฐาน (Basemaps)
+        const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap'
+        }).addTo(map); // แสดง OSM เป็นค่าเริ่มต้น
+
+        const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: '© Esri'
+        });
+
+
+        // รวบรวม Basemap ไว้ใน Object เดียวเพื่อใช้กับ Control
+        const baseMaps = { "OpenStreetMap": osm, "Satellite Imagery": satellite };
+
+
+
+        // [ขั้นตอนที่ 4] การจัดการข้อมูล WMS (Web Map Service)
+        // 4.1 ข้อมูลการใช้ประโยชน์ที่ดินจาก ESA
+        const landCover = L.tileLayer.wms("https://services.terrascope.be/wms/v2?", {
+            layers: 'WORLDCOVER_2020_MAP', format: 'image/png', transparent: true
+        });
+        // 4.2 ข้อมูลภูมิประเทศโลกจาก GMRT
+        const gmrt = L.tileLayer.wms("https://www.gmrt.org/services/mapserver/wms_merc?", {
+            layers: 'gmrt', format: 'image/png', transparent: true
+        });
+
+        const wmsLayers = { "Land Cover (ESA)": landCover, "Topography (GMRT)": gmrt };
+
+        // 4.3 เทคนิคการจัดการลำดับภาพ: เมื่อเปิดชั้นข้อมูลใหม่ ให้ขยับมาอยู่ด้านหน้าสุดของกลุ่มภาพ
+        map.on('overlayadd', function (e) {
+            if (e.layer instanceof L.TileLayer.WMS) {
+                e.layer.bringToFront();
+            }
+        });
+
+        // [ขั้นตอนที่ 5] การจัดการข้อมูล GeoJSON และการนำเข้าไฟล์
+        // 5.1 สร้างกลุ่มว่างสำหรับเก็บชั้นข้อมูลที่ผู้ใช้นำเข้า
+        const geojsonGroup = L.layerGroup().addTo(map);
+        const geojsonLayer = { "Show Imported File": geojsonGroup };
+
+
+
+
+        // 5.2 ฟังก์ชันสำหรับย้ายเครื่องมือควบคุมของ Leaflet ไปใส่ไว้ใน Sidebar ของเรา
+        function mountControl(layers, containerId, isBase = false) {
+            const ctrl = isBase ? L.control.layers(layers, null, { collapsed: false }) : L.control.layers(null, layers, { collapsed: false });
+            ctrl.addTo(map);
+            document.getElementById(containerId).appendChild(ctrl.getContainer());
+        }
+
+        // ติดตั้งตัวเลือก Layer ลงในช่องที่เราเตรียมไว้ใน Sidebar
+        mountControl(baseMaps, 'basemap-ctrl', true);
+        mountControl(wmsLayers, 'wms-ctrl');
+        mountControl(geojsonLayer, 'geojson-ctrl');
+
+
+
+
+
+        // 5.3 ฟังก์ชันสลับสถานะ Sidebar (เปิด/ซ่อน)
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const btn = document.getElementById('toggle-btn');
+            sidebar.classList.toggle('collapsed');
+            // ปรับตำแหน่งปุ่ม Toggle ตาม Sidebar
+            btn.style.left = sidebar.classList.contains('collapsed') ? '10px' : '330px';
+            // สั่งให้แผนที่คำนวณขนาดพื้นที่ใหม่หลังจาก Sidebar เลื่อน เพื่อป้องกันแผนที่แหว่ง
+            setTimeout(() => { map.invalidateSize(); }, 300);
+        }
+        // 5.4 ฟังก์ชันประมวลผลการอ่านไฟล์ GeoJSON จากเครื่องผู้ใช้
+        document.getElementById('fileInput').addEventListener('change', function (e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function (event) {
+                try {
+                    const data = JSON.parse(event.target.result); // แปลงข้อความในไฟล์เป็น JSON Object
+                    geojsonGroup.clearLayers(); // ล้างข้อมูลเก่าออกก่อน
+
+                    // สร้างชั้นข้อมูลใหม่และกำหนดให้อยู่ใน 'vectorPane' ที่เราสร้างไว้ในขั้นตอนที่ 2
+                    const layer = L.geoJSON(data, {
+                        style: { color: '#e67e22', weight: 3, fillOpacity: 0.4 },
+                        pane: 'vectorPane'
+                    }).addTo(geojsonGroup);
+
+                    map.fitBounds(layer.getBounds()); // ขยายแผนที่ไปยังขอบเขตของข้อมูลที่นำเข้า
+                } catch (err) { alert("ไฟล์ไม่ใช่ GeoJSON ที่ถูกต้อง"); }
+            };
+            reader.readAsText(file);
+        });
+
+        // [ขั้นตอนที่ 6] ระบบการวาดและการส่งออกข้อมูล (Geoman & Data Export)
+        // 6.1 ติดตั้งเครื่องมือวาดบนมุมซ้ายบนของแผนที่
+        map.pm.addControls({
+            position: 'topleft',
+            drawCircleMarker: false,
+            rotateMode: false
+        });
+
+        // 6.2 เมื่อมีการสร้างวัตถุใหม่เสร็จสิ้น ให้ยกมาไว้หน้าสุดเสมอ
+        map.on('pm:create', function (e) {
+            e.layer.bringToFront();
+        });
+
+
+        // 6.3 ฟังก์ชันรวบรวมสิ่งที่วาดทั้งหมดแล้วแปลงเป็นไฟล์ดาวน์โหลด
+        function exportGeoJSON() {
+            // ดึงข้อมูล Geoman Layers ออกมาในรูปแบบมาตรฐาน GeoJSON
+            const data = map.pm.getGeomanLayers(true).toGeoJSON();
+            if (data.features.length === 0) return alert("กรุณาวาดรูปทรงบนแผนที่ก่อนส่งออกครับ");
+
+            // สร้างไฟล์จำลอง (Blob) และสั่งให้บราวเซอร์ดาวน์โหลดออกไป
+            const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = "my_map_data.geojson"; // ตั้งชื่อไฟล์เริ่มต้น
+            a.click(); // จำลองการคลิกเพื่อดาวน์โหลด
+        }
+
+function createMarker(color) {
+    return L.divIcon({
+        className: "",
+        iconSize: [30, 42],
+        iconAnchor: [15, 42],
+        html: `
+        <svg width="30" height="42" viewBox="0 0 24 36">
+          <path d="M12 0C6 0 1 5 1 11c0 8 11 24 11 24s11-16 11-24C23 5 18 0 12 0z"
+                fill="${color}" stroke="black" stroke-width="1"/>
+          <circle cx="12" cy="11" r="4" fill="white"/>
+        </svg>
+        `
+    });
+}
+
+
+// ----------------------
+// จุดที่ 1 ดอยสุเทพ
+// ----------------------
+var marker_a = L.marker([18.8048, 98.9215], {
+    icon: createMarker("red")
+}).addTo(map);
+
+marker_a.bindPopup(`
+<div style="width:220px;">
+<h3 style="color:#c62828;">ดอยสุเทพ</h3>
+<img src="data:image/jpeg;base64,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"
+style="width:100%;height:140px;object-fit:cover;border-radius:8px;">
+<p><b>จังหวัด:</b> เชียงใหม่</p>
+<p><b>พิกัด:</b> 18.8048, 98.9215</p>
+</div>
+`);
+
+
+// ----------------------
+// จุดที่ 2 เกาะพีพี
+// ----------------------
+var marker_b = L.marker([7.7407, 98.7784], {
+    icon: createMarker("blue")
+}).addTo(map);
+
+marker_b.bindPopup(`
+<div style="width:220px;">
+<h3 style="color:#1565c0;">เกาะพีพี</h3>
+<img src="data:image/jpeg;base64,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"
+style="width:100%;height:140px;object-fit:cover;border-radius:8px;">
+<p><b>จังหวัด:</b> กระบี่</p>
+<p><b>พิกัด:</b> 7.7407, 98.7784</p>
+</div>
+`);
+
+
+// ----------------------
+// จุดที่ 3 วัดพระแก้ว
+// ----------------------
+var marker_c = L.marker([13.7515, 100.4925], {
+    icon: createMarker("green")
+}).addTo(map);
+
+marker_c.bindPopup(`
+<div style="width:220px;">
+<h3 style="color:#2e7d32;">วัดพระแก้ว</h3>
+<img src="https://www.dhammathai.org/watthai/data/imagedb/10-1.jpg"
+style="width:100%;height:140px;object-fit:cover;border-radius:8px;">
+<p><b>จังหวัด:</b> กรุงเทพมหานคร</p>
+<p><b>พิกัด:</b> 13.7515, 100.4925</p>
+</div>
+`);
+
+
+// ----------------------
+// จุดที่ 4 ทะเลหมอกภูทับเบิก
+// ----------------------
+var marker_d = L.marker([16.8973, 101.1086], {
+    icon: createMarker("orange")
+}).addTo(map);
+
+marker_d.bindPopup(`
+<div style="width:220px;">
+<h3 style="color:#ef6c00;">ภูทับเบิก</h3>
+<img src="https://my.kapook.com/imagescontent/fb_img/923/s_99626_4365.jpg"
+style="width:100%;height:140px;object-fit:cover;border-radius:8px;">
+<p><b>จังหวัด:</b> เพชรบูรณ์</p>
+<p><b>พิกัด:</b> 16.8973, 101.1086</p>
+</div>
+`);
+
+
+// ----------------------
+// จุดที่ 5 อุทยานแห่งชาติเอราวัณ
+// ----------------------
+var marker_e = L.marker([14.3706, 99.1425], {
+    icon: createMarker("purple")
+}).addTo(map);
+
+marker_e.bindPopup(`
+<div style="width:220px;">
+<h3 style="color:#6a1b9a;">น้ำตกเอราวัณ</h3>
+<img src="https://cbtthailand.dasta.or.th/upload-file-api/Resources/RelateAttraction/Images/RAT710103/1.jpeg"
+style="width:100%;height:140px;object-fit:cover;border-radius:8px;">
+<p><b>จังหวัด:</b> กาญจนบุรี</p>
+<p><b>พิกัด:</b> 14.3706, 99.1425</p>
+</div>
+`);
+        
+
+
+
+
+
+    </script>
+</body>
+
+</html>
